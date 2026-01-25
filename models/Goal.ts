@@ -11,8 +11,9 @@ export interface IGoal extends Document {
   success_metric: string;
   deadline: Date;
   status: GoalStatus;
-  created_at: Date;
-  updated_at: Date;
+  created_at?: Date;
+  updated_at?: Date;
+  salary_range?:string
 }
 
 const GoalSchema = new Schema<IGoal>(
@@ -29,6 +30,7 @@ const GoalSchema = new Schema<IGoal>(
     current_count: { type: Number, default: 0 },
     success_metric: { type: String, required: true },
     deadline: { type: Date, required: true },
+    salary_range:{type:String},
     status: {
       type: String,
       enum: Object.values(GoalStatus),
