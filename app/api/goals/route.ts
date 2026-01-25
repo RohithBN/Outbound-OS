@@ -1,12 +1,20 @@
 import dbConnect from "@/lib/dbConnect";
 import { interpretGoal } from "@/lib/gemini";
+import { getCurrentUser } from "@/lib/auth";
 import { Goal, GoalStatus } from "@/models";
 import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(request: NextRequest) {
   try {
+    const authUser = await getCurrentUser();
+    if (!authUser) {
+      return NextResponse.json(
+        { message: "Not authenticated", success: false },
+        { status: 401 }
+      );
+    }
+
     const { raw_input } = await request.json();
-    const userId = "user_id"; //TODO: jwt implementation
 
     if (!raw_input) {
       return NextResponse.json(
@@ -21,7 +29,7 @@ export async function POST(request: NextRequest) {
     const parsedGoal = await interpretGoal(raw_input);
 
     const goalData = {
-      user_id: userId,
+      user_id: authUser.userId,
       raw_input: raw_input,
       objective_type: parsedGoal.objective_type,
       criteria: parsedGoal.parsed_criteria,
@@ -30,10 +38,10 @@ export async function POST(request: NextRequest) {
       current_count: parsedGoal.current_count,
       target_count: parsedGoal.target_count,
       deadline: parsedGoal.deadline,
-      salary_range:parsedGoal.salary_range
+      salary_range: parsedGoal.salary_range,
     };
 
-    console.log(goalData)
+    console.log(goalData);
 
     const goal = await Goal.create(goalData);
 
@@ -65,13 +73,20 @@ export async function POST(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   try {
-    const userId = "user_id"; //TODO: jwt implementation
+    const authUser = await getCurrentUser();
+    if (!authUser) {
+      return NextResponse.json(
+        { message: "Not authenticated", success: false },
+        { status: 401 }
+      );
+    }
+
     const { searchParams } = new URL(request.url);
     const status = searchParams.get("status");
 
     await dbConnect();
 
-    const query: Record<string, unknown> = { user_id: userId };
+    const query: Record<string, unknown> = { user_id: authUser.userId };
     if (status) {
       query.status = status;
     }
