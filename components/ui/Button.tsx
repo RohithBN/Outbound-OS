@@ -19,15 +19,15 @@ export default function Button({
   ...props
 }: ButtonProps) {
   const baseStyles =
-    "font-semibold rounded-lg transition-all duration-200 flex items-center justify-center gap-2";
+    "font-semibold rounded-lg flex items-center justify-center gap-2 transition-all duration-300 ease-in-out";
 
   const variants = {
     primary:
-      "bg-orange-500 text-white hover:bg-orange-600 active:bg-orange-700 disabled:bg-orange-300",
+      "bg-orange-500 text-white hover:bg-orange-600 active:bg-orange-700 disabled:bg-orange-300 dark:disabled:bg-orange-800 hover:shadow-lg hover:scale-105 active:scale-95",
     secondary:
-      "bg-gray-900 text-white hover:bg-gray-800 active:bg-gray-700 disabled:bg-gray-400",
+      "bg-gray-900 text-white hover:bg-gray-800 active:bg-gray-700 disabled:bg-gray-400 dark:bg-white dark:text-gray-900 dark:hover:bg-gray-100 hover:shadow-lg hover:scale-105 active:scale-95",
     outline:
-      "border-2 border-gray-200 text-gray-700 hover:border-orange-500 hover:text-orange-500 disabled:border-gray-100 disabled:text-gray-300",
+      "border-2 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:border-orange-500 hover:text-orange-500 dark:hover:border-orange-500 dark:hover:text-orange-500 disabled:border-gray-100 disabled:text-gray-300 hover:shadow-md hover:scale-105 active:scale-95",
   };
 
   const sizes = {
