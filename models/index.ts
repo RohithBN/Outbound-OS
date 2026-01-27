@@ -10,6 +10,8 @@ export { default as Campaign } from "./Campaign";
 export type { ICampaign, ISequenceStep } from "./Campaign";
 export { default as User, UserStatus, UserRole } from "./User";
 export type { IUser } from "./User";
+export { default as TalentProfile, TalentStatus } from "./TalentProfile";
+export type { ITalentProfile } from "./TalentProfile";
 export * from "./enums";
 
 

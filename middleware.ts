@@ -14,7 +14,14 @@ const protectedRoutes = ["/dashboard", "/goals", "/campaigns", "/prospects", "/s
 const authRoutes = ["/login", "/signup", "/forgot-password"];
 
 // Public routes that don't need any checks
-const publicRoutes = ["/", "/api/auth/login", "/api/auth/signup", "/api/auth/logout"];
+const publicRoutes = [
+  "/", 
+  "/api/auth/login", 
+  "/api/auth/signup", 
+  "/api/auth/logout",
+  "/talent/register",
+  "/api/talent/register"
+];
 
 async function verifyToken(token: string): Promise<boolean> {
   try {
