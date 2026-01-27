@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { Goal, GoalStatus } from "@/models";
 import { NextRequest, NextResponse } from "next/server";
 import { discoverProspectsForGoal } from "@/lib/prospectDiscovery";
+import { runAutomatedOutreach } from "@/lib/outreach";
 
 export async function POST(request: NextRequest) {
   try {

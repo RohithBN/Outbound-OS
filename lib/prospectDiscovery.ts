@@ -1,8 +1,14 @@
-import { searchDevelopers, getUserRepositories, getUserContributions, GitHubUser } from "./githubService";
+import {
+  searchDevelopers,
+  getUserRepositories,
+  getUserContributions,
+  GitHubUser,
+} from "./githubService";
 import { batchScoreProspects, ProspectScoringInput } from "./prospectScoring";
 import { Prospect, IGoal } from "@/models";
 import { ParsedCriteria } from "@/types/response";
 import dbConnect from "./dbConnect";
+import { sendEmailToProspect } from "@/lib/outreach/sendEmailToProspect";
 
 export interface DiscoveryResult {
   total_discovered: number;
@@ -19,19 +25,19 @@ export async function discoverProspectsForGoal(
 ): Promise<DiscoveryResult> {
   try {
     await dbConnect();
-    
+
     const criteria = goal.criteria as ParsedCriteria;
     const targetCount = goal.target_count * 2;
-    
+
     console.log(`Starting prospect discovery for goal ${goal._id}`);
     console.log(`Target: ${targetCount} prospects`);
-    
+
     const skills = criteria.skills || [];
     const location = criteria.location;
-    
+
     const searchResult = await searchDevelopers(skills, location, targetCount);
     console.log(`Found ${searchResult.users.length} users from GitHub`);
-    
+
     if (searchResult.users.length === 0) {
       return {
         total_discovered: 0,
@@ -39,27 +45,26 @@ export async function discoverProspectsForGoal(
         top_prospects: [],
       };
     }
-    
-    // Collect all prospect data first
+
     const prospectsWithData: Array<{
       user: GitHubUser;
       scoringInput: ProspectScoringInput;
     }> = [];
-    
-    console.log('Fetching repository and contribution data for all users...');
-    
+
+    console.log("Fetching repository and contribution data...");
+
     for (const user of searchResult.users) {
       try {
         const repos = await getUserRepositories(user.login);
         const contributions = await getUserContributions(user.login);
-        
+
         const scoringInput: ProspectScoringInput = {
           name: user.name || user.login,
           login: user.login,
           bio: user.bio,
           location: user.location,
           company: user.company,
-          repositories: repos.map(repo => ({
+          repositories: repos.map((repo) => ({
             name: repo.name,
             description: repo.description,
             language: repo.language || null,
@@ -71,43 +76,33 @@ export async function discoverProspectsForGoal(
           contributions,
           github_url: user.html_url,
         };
-        
-        prospectsWithData.push({
-          user,
-          scoringInput,
-        });
-        
-        // Add delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        prospectsWithData.push({ user, scoringInput });
+
+        await new Promise((resolve) => setTimeout(resolve, 1000));
       } catch (error) {
         console.error(`Error processing user ${user.login}:`, error);
       }
     }
-    
-    console.log(`Successfully collected data for ${prospectsWithData.length} users`);
-    
-    // Batch score all prospects in a single LLM call
-    console.log('Scoring all prospects in batch...');
-    const scoringInputs = prospectsWithData.map(p => p.scoringInput);
+
+    console.log(`Collected data for ${prospectsWithData.length} users`);
+
+    const scoringInputs = prospectsWithData.map((p) => p.scoringInput);
     const scoringResults = await batchScoreProspects(criteria, scoringInputs);
-    
-    // Create a map of login to scoring result for easy lookup
+
     const scoresMap = new Map(
-      scoringResults.map(result => [result.login, result])
+      scoringResults.map((result) => [result.login, result])
     );
-    
-    // Combine user data with scores
+
     const scoredProspects = prospectsWithData
-      .map(({ user, scoringInput }) => {
+      .map(({ user }) => {
         const scoringResult = scoresMap.get(user.login) || {
           login: user.login,
           score: 5,
-          reasoning: "Default score assigned",
+          reasoning: "Default score",
           signals: [],
-          strengths: [],
-          concerns: [],
         };
-        
+
         return {
           user,
           score: scoringResult.score,
@@ -116,15 +111,17 @@ export async function discoverProspectsForGoal(
         };
       })
       .sort((a, b) => b.score - a.score);
-    
+
     console.log(`Scored ${scoredProspects.length} prospects`);
-    
-    // Save to database
-    const savePromises = scoredProspects.map(async (prospect) => {
+
+    // SAVE PROSPECTS
+    const savedProspects = [];
+
+    for (const prospect of scoredProspects) {
       try {
-        const email = prospect.user.email || 
-                     `${prospect.user.login}@github.com`;
-        
+        const email =
+          prospect.user.email || `${prospect.user.login}@github.com`;
+
         const prospectData = {
           goal_id: goal._id,
           source: "github",
@@ -147,32 +144,51 @@ export async function discoverProspectsForGoal(
           score_reasoning: prospect.reasoning,
           signals: prospect.signals,
         };
-        
-        await Prospect.findOneAndUpdate(
+
+        const saved = await Prospect.findOneAndUpdate(
           { goal_id: goal._id, email: email },
           prospectData,
           { upsert: true, new: true }
         );
+
+        if (saved) savedProspects.push(saved);
       } catch (error) {
         console.error(`Error saving prospect ${prospect.user.login}:`, error);
       }
-    });
-    
-    await Promise.all(savePromises);
-    
-    console.log(`Successfully saved ${scoredProspects.length} prospects`);
-    
+    }
+
+    console.log(`Saved ${savedProspects.length} prospects`);
+
+    // 🚀 AUTOMATED OUTREACH
+    const topProspectsForEmail = savedProspects
+      .sort((a, b) => b.ai_score - a.ai_score)
+      .slice(0, 5);
+
+    for (const prospect of topProspectsForEmail) {
+      try {
+        if (!prospect.email) {
+          console.log(`Skipping ${prospect.name}, no email`);
+          continue;
+        }
+
+        await sendEmailToProspect(prospect);
+        console.log(`📧 Email has been sent to ${prospect.name}`);
+      } catch (err) {
+        console.error(`❌ Failed email to ${prospect.email}`, err);
+      }
+    }
+
     return {
       total_discovered: searchResult.users.length,
       total_scored: scoredProspects.length,
-      top_prospects: scoredProspects.slice(0, 10).map(p => ({
+      top_prospects: scoredProspects.slice(0, 10).map((p) => ({
         name: p.user.name || p.user.login,
         score: p.score,
         github_url: p.user.html_url,
       })),
     };
   } catch (error) {
-    console.error('Prospect discovery error:', error);
+    console.error("Prospect discovery error:", error);
     throw error;
   }
 }
