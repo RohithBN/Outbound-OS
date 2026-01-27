@@ -50,6 +50,7 @@ export async function POST(request: NextRequest) {
       {
         message: "Login successful",
         success: true,
+        token:token,
         user: {
           id: user._id,
           email: user.email,

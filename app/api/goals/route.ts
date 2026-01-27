@@ -3,6 +3,7 @@ import { interpretGoal } from "@/lib/gemini";
 import { getCurrentUser } from "@/lib/auth";
 import { Goal, GoalStatus } from "@/models";
 import { NextRequest, NextResponse } from "next/server";
+import { discoverProspectsForGoal } from "@/lib/prospectDiscovery";
 
 export async function POST(request: NextRequest) {
   try {
@@ -45,9 +46,15 @@ export async function POST(request: NextRequest) {
 
     const goal = await Goal.create(goalData);
 
+    // Trigger prospect discovery asynchronously (don't wait)
+    discoverProspectsForGoal(goal).catch((error) => {
+      console.error("Background prospect discovery failed:", error);
+    });
+
     return NextResponse.json(
       {
-        message: "Goal created successfully",
+        message:
+          "Goal created successfully. Prospect discovery started in background.",
         success: true,
         goal: goal,
         interpretation: {
