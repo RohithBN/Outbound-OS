@@ -28,25 +28,86 @@ export async function discoverProspectsForGoal(
     await dbConnect();
 
     const criteria = goal.criteria as ParsedCriteria;
-    const targetCount = goal.target_count * 2;
+    const totalTargetCount = goal.target_count * 2;
+    
+    // Calculate 60/40 split
+    const talentPoolTarget = Math.ceil(totalTargetCount * 0.6); // 60% from talent pool
+    const githubTarget = Math.floor(totalTargetCount * 0.4);     // 40% from GitHub
 
     console.log(`Starting prospect discovery for goal ${goal._id}`);
-    console.log(`Target: ${targetCount} prospects`);
+    console.log(`Total target: ${totalTargetCount} | Talent pool: ${talentPoolTarget} | GitHub: ${githubTarget}`);
 
-    // STEP 1: Check registered talent profiles FIRST
+    // STEP 1: Search registered talent profiles with scoring
     const registeredTalent = await TalentProfile.find({
       status: "active",
-      role: { $regex: criteria.role || "", $options: "i" },
-      location: criteria.location ? { $regex: criteria.location, $options: "i" } : { $exists: true },
-      skills: { $in: criteria.skills || [] },
-    })
-      .sort({ profile_completeness: -1, created_at: -1 })
-      .limit(Math.min(targetCount, 20));
+      $or: [
+        { role: { $regex: criteria.role || "", $options: "i" } },
+        { skills: { $in: criteria.skills || [] } }
+      ],
+      ...(criteria.location && { 
+        location: { $regex: criteria.location, $options: "i" } 
+      })
+    }).limit(talentPoolTarget * 2); // Get extra to score and filter
 
-    console.log(`Found ${registeredTalent.length} registered talent profiles`);
+    console.log(`Found ${registeredTalent.length} registered talent profiles for scoring`);
 
-    // Convert registered talent to prospects
-    const talentProspects = registeredTalent.map(talent => ({
+    // Score talent pool candidates
+    const scoredTalentPool = registeredTalent.map(talent => {
+      let score = 5.0; // Base score
+      
+      // Role match scoring
+      if (criteria.role && talent.role.toLowerCase().includes(criteria.role.toLowerCase())) {
+        score += 2.0;
+      }
+      
+      // Skills match scoring
+      const matchedSkills = talent.skills.filter((skill:any) => 
+        criteria.skills?.some(reqSkill => 
+          skill.toLowerCase().includes(reqSkill.toLowerCase()) ||
+          reqSkill.toLowerCase().includes(skill.toLowerCase())
+        )
+      );
+      score += Math.min(2.0, matchedSkills.length * 0.5);
+      
+      // Location match scoring
+      if (criteria.location && talent.location.toLowerCase().includes(criteria.location.toLowerCase())) {
+        score += 1.0;
+      }
+      
+      // Experience level scoring
+      if (criteria.experience) {
+        const expYears = parseInt(criteria.experience);
+        if (!isNaN(expYears) && talent.experience_years >= expYears) {
+          score += 0.5;
+        }
+      }
+      
+      // Profile completeness bonus
+      score += (talent.profile_completeness / 100) * 0.5;
+      
+      // Registered talent bonus
+      score += 1.0;
+      
+      return {
+        talent,
+        score: Math.min(10, score),
+        reasoning: `Registered talent: ${matchedSkills.length} skills matched, ${talent.experience_years}y exp, ${talent.profile_completeness}% complete profile`,
+        signals: [
+          "registered_talent",
+          "active_job_seeker",
+          ...matchedSkills.slice(0, 3)
+        ]
+      };
+    });
+
+    // Sort by score and take top candidates
+    scoredTalentPool.sort((a, b) => b.score - a.score);
+    const topTalentPool = scoredTalentPool.slice(0, talentPoolTarget);
+
+    console.log(`Scored and selected top ${topTalentPool.length} talent pool candidates`);
+
+    // Convert talent pool to prospect format
+    const talentProspects = topTalentPool.map(({ talent, score, reasoning, signals }) => ({
       goal_id: goal._id,
       source: "talent_pool",
       source_id: talent._id.toString(),
@@ -63,14 +124,15 @@ export async function discoverProspectsForGoal(
         experience_years: talent.experience_years,
         work_authorization: talent.work_authorization,
         availability: talent.availability,
+        remote_preference: talent.remote_preference,
         profile_completeness: talent.profile_completeness,
       },
-      ai_score: 9.5, // Registered talent gets high base score
-      score_reasoning: "Registered talent profile - pre-verified and actively looking",
-      signals: ["registered_talent", "active_job_seeker", ...talent.skills.slice(0, 3)],
+      ai_score: score,
+      score_reasoning: reasoning,
+      signals: signals,
     }));
 
-    // Save registered talent as prospects
+    // Save talent pool prospects
     for (const prospectData of talentProspects) {
       await Prospect.findOneAndUpdate(
         { goal_id: goal._id, email: prospectData.email },
@@ -81,42 +143,43 @@ export async function discoverProspectsForGoal(
 
     // Update talent profile matched count
     await TalentProfile.updateMany(
-      { _id: { $in: registeredTalent.map(t => t._id) } },
+      { _id: { $in: topTalentPool.map(t => t.talent._id) } },
       { $inc: { matched_count: 1 } }
     );
 
-      // STEP 2: Search GitHub for additional prospects (if needed)
-      const remainingCount = targetCount - registeredTalent.length;
-  
-      if (remainingCount > 0) {
-        console.log(`Searching GitHub for ${remainingCount} more prospects...`);
-  
-        const skills = criteria.skills || [];
-        const location = criteria.location;
-  
-        const searchResult = await searchDevelopers(skills, location, remainingCount);
-        console.log(`Found ${searchResult.users.length} users from GitHub`);
-  
-        if (searchResult.users.length === 0) {
-          return {
-            total_discovered: 0,
-            total_scored: 0,
-            top_prospects: [],
-          };
-        }
-  
+    // STEP 2: Calculate remaining count needed (with fallback logic)
+    const talentPoolActual = topTalentPool.length;
+    const remainingForGithub = githubTarget + (talentPoolTarget - talentPoolActual);
+    
+    console.log(`Talent pool provided ${talentPoolActual}/${talentPoolTarget} candidates`);
+    console.log(`Searching GitHub for ${remainingForGithub} prospects to reach total target`);
+
+    let githubProspects: Array<{
+      name: string;
+      score: number;
+      github_url: string;
+    }> = [];
+
+    if (remainingForGithub > 0) {
+      const skills = criteria.skills || [];
+      const location = criteria.location;
+
+      const searchResult = await searchDevelopers(skills, location, remainingForGithub);
+      console.log(`Found ${searchResult.users.length} users from GitHub`);
+
+      if (searchResult.users.length > 0) {
         const prospectsWithData: Array<{
           user: GitHubUser;
           scoringInput: ProspectScoringInput;
         }> = [];
-  
+
         console.log("Fetching repository and contribution data...");
-  
+
         for (const user of searchResult.users) {
           try {
             const repos = await getUserRepositories(user.login);
             const contributions = await getUserContributions(user.login);
-  
+
             const scoringInput: ProspectScoringInput = {
               name: user.name || user.login,
               login: user.login,
@@ -135,25 +198,25 @@ export async function discoverProspectsForGoal(
               contributions,
               github_url: user.html_url,
             };
-  
+
             prospectsWithData.push({ user, scoringInput });
-  
             await new Promise((resolve) => setTimeout(resolve, 1000));
           } catch (error) {
             console.error(`Error processing user ${user.login}:`, error);
           }
         }
-  
-        console.log(`Collected data for ${prospectsWithData.length} users`);
-  
+
+        console.log(`Collected data for ${prospectsWithData.length} GitHub users`);
+
+        // Batch score GitHub prospects
         const scoringInputs = prospectsWithData.map((p) => p.scoringInput);
         const scoringResults = await batchScoreProspects(criteria, scoringInputs);
-  
+
         const scoresMap = new Map(
           scoringResults.map((result) => [result.login, result])
         );
-  
-        const scoredProspects = prospectsWithData
+
+        const scoredGithubProspects = prospectsWithData
           .map(({ user }) => {
             const scoringResult = scoresMap.get(user.login) || {
               login: user.login,
@@ -161,7 +224,7 @@ export async function discoverProspectsForGoal(
               reasoning: "Default score",
               signals: [],
             };
-  
+
             return {
               user,
               score: scoringResult.score,
@@ -170,17 +233,14 @@ export async function discoverProspectsForGoal(
             };
           })
           .sort((a, b) => b.score - a.score);
-  
-        console.log(`Scored ${scoredProspects.length} prospects`);
-  
-        // SAVE PROSPECTS
-        const savedProspects = [];
-  
-        for (const prospect of scoredProspects) {
+
+        console.log(`Scored ${scoredGithubProspects.length} GitHub prospects`);
+
+        // Save GitHub prospects
+        for (const prospect of scoredGithubProspects) {
           try {
-            const email =
-              prospect.user.email || `${prospect.user.login}@github.com`;
-  
+            const email = prospect.user.email || `${prospect.user.login}@github.com`;
+
             const prospectData = {
               goal_id: goal._id,
               source: "github",
@@ -203,63 +263,76 @@ export async function discoverProspectsForGoal(
               score_reasoning: prospect.reasoning,
               signals: prospect.signals,
             };
-  
-            const saved = await Prospect.findOneAndUpdate(
+
+            await Prospect.findOneAndUpdate(
               { goal_id: goal._id, email: email },
               prospectData,
               { upsert: true, new: true }
             );
-  
-            if (saved) savedProspects.push(saved);
           } catch (error) {
             console.error(`Error saving prospect ${prospect.user.login}:`, error);
           }
         }
-  
-        console.log(`Saved ${savedProspects.length} prospects`);
-  
-        // 🚀 AUTOMATED OUTREACH
-        const topProspectsForEmail = savedProspects
-          .sort((a, b) => b.ai_score - a.ai_score)
-          .slice(0, 5);
-  
-        for (const prospect of topProspectsForEmail) {
-          try {
-            if (!prospect.email) {
-              console.log(`Skipping ${prospect.name}, no email`);
-              continue;
-            }
-  
-            await sendEmailToProspect(prospect);
-            console.log(`📧 Email has been sent to ${prospect.name}`);
-          } catch (err) {
-            console.error(`❌ Failed email to ${prospect.email}`, err);
-          }
-        }
-  
-        return {
-          total_discovered: searchResult.users.length,
-          total_scored: scoredProspects.length,
-          top_prospects: scoredProspects.slice(0, 10).map((p) => ({
-            name: p.user.name || p.user.login,
-            score: p.score,
-            github_url: p.user.html_url,
-          })),
-        };
+
+        githubProspects = scoredGithubProspects.slice(0, 10).map((p) => ({
+          name: p.user.name || p.user.login,
+          score: p.score,
+          github_url: p.user.html_url,
+        }));
       }
-  
-      // Return result for registered talent only
-      return {
-        total_discovered: registeredTalent.length,
-        total_scored: talentProspects.length,
-        top_prospects: talentProspects.slice(0, 10).map((p) => ({
-          name: p.name,
-          score: p.ai_score,
-          github_url: p.github_url || "",
-        })),
-      };
-    } catch (error) {
-      console.error("Prospect discovery error:", error);
-      throw error;
     }
+
+    // Get all saved prospects for this goal
+    const allProspects = await Prospect.find({ goal_id: goal._id })
+      .sort({ ai_score: -1 })
+      .limit(totalTargetCount);
+
+    console.log(`Total prospects saved: ${allProspects.length} (Talent: ${talentPoolActual}, GitHub: ${allProspects.length - talentPoolActual})`);
+
+    // AUTOMATED OUTREACH - Top 5 highest scored
+    const topProspectsForEmail = allProspects
+      .sort((a, b) => b.ai_score - a.ai_score)
+      .slice(0, 5);
+
+    for (const prospect of topProspectsForEmail) {
+      try {
+        if (!prospect.email || prospect.email.includes('@github.com')) {
+          console.log(`Skipping ${prospect.name}, no valid email`);
+          continue;
+        }
+
+        await sendEmailToProspect(prospect);
+        console.log(`📧 Email sent to ${prospect.name} (Score: ${prospect.ai_score})`);
+        
+        // Update contacted count for talent pool
+        if (prospect.source === 'talent_pool') {
+          await TalentProfile.findByIdAndUpdate(prospect.source_id, {
+            $inc: { contacted_count: 1 }
+          });
+        }
+      } catch (err) {
+        console.error(`❌ Failed email to ${prospect.email}`, err);
+      }
+    }
+
+    // Combine top prospects from both sources
+    const topTalentProspects = talentProspects.slice(0, 5).map((p) => ({
+      name: p.name,
+      score: p.ai_score,
+      github_url: p.github_url || "",
+    }));
+
+    const combinedTopProspects = [...topTalentProspects, ...githubProspects]
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10);
+
+    return {
+      total_discovered: allProspects.length,
+      total_scored: allProspects.length,
+      top_prospects: combinedTopProspects,
+    };
+  } catch (error) {
+    console.error("Prospect discovery error:", error);
+    throw error;
+  }
 }
