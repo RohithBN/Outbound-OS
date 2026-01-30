@@ -13,5 +13,6 @@ export type { IUser } from "./User";
 export { default as TalentProfile, TalentStatus } from "./TalentProfile";
 export type { ITalentProfile } from "./TalentProfile";
 export * from "./enums";
+export { default as Email } from "./Email";
 
 
