@@ -171,7 +171,6 @@ export async function discoverProspectsForGoal(
           })
           .sort((a, b) => b.score - a.score);
   
-        console.log(`Scored ${scoredProspects.length} prospects`);
   
         // SAVE PROSPECTS
         const savedProspects = [];
