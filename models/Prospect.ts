@@ -16,7 +16,21 @@ export interface IProspect extends Document {
   ai_score: number;
   score_reasoning: string;
   signals: Array<string>;
+
+  // Existing
   status: ProspectStatus;
+
+  // 🆕 Outreach Lifecycle
+  outreach_status: "not_sent" | "sent" | "replied";
+  reply_category: "interested" | "not_now" | "not_interested" | null;
+
+  // 🆕 Assignment Lifecycle
+  assignment_status: "not_sent" | "sent" | "completed";
+  assignment_score: number | null;
+
+  // 🆕 Final Ranking
+  final_score: number | null;
+
   discovered_at: Date;
   updated_at: Date;
 }
@@ -37,12 +51,42 @@ const ProspectSchema = new Schema<IProspect>(
     ai_score: { type: Number, min: 0, max: 10, index: true },
     score_reasoning: { type: String },
     signals: [{ type: String }],
+
     status: {
       type: String,
       enum: Object.values(ProspectStatus),
       default: ProspectStatus.DISCOVERED,
       index: true,
     },
+
+    // 🆕 Outreach tracking
+    outreach_status: {
+      type: String,
+      enum: ["not_sent", "sent", "replied"],
+      default: "not_sent",
+      index: true,
+    },
+
+    reply_category: {
+      type: String,
+      enum: ["interested", "not_now", "not_interested"],
+      default: null,
+      index: true,
+    },
+
+    // 🆕 Assignment tracking
+    assignment_status: {
+      type: String,
+      enum: ["not_sent", "sent", "completed"],
+      default: "not_sent",
+      index: true,
+    },
+
+    assignment_score: { type: Number, default: null },
+
+    // 🆕 Final ranking
+    final_score: { type: Number, default: null, index: true },
+
     discovered_at: { type: Date, default: Date.now },
   },
   {
@@ -52,5 +96,7 @@ const ProspectSchema = new Schema<IProspect>(
 
 ProspectSchema.index({ goal_id: 1, email: 1 }, { unique: true });
 
-const Prospect = mongoose.models.Prospect || mongoose.model<IProspect>("Prospect", ProspectSchema);
+const Prospect =
+  mongoose.models.Prospect || mongoose.model<IProspect>("Prospect", ProspectSchema);
+
 export default Prospect;
