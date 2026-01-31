@@ -5,11 +5,11 @@ import {
   GitHubUser,
 } from "./githubService";
 import { batchScoreProspects, ProspectScoringInput } from "./prospectScoring";
-import { Prospect, IGoal } from "@/models";
-import { ParsedCriteria } from "@/types/response";
+import { Prospect, IGoal, Message, MessageType, Channel, MessageStatus } from "@/models";
 import dbConnect from "./dbConnect";
 import { sendEmailToProspect } from "@/lib/outreach/sendEmailToProspect";
 import TalentProfile from "@/models/TalentProfile";
+import { ParsedCriteria } from "@/types/response";
 
 export interface DiscoveryResult {
   total_discovered: number;
@@ -289,10 +289,13 @@ export async function discoverProspectsForGoal(
 
     console.log(`Total prospects saved: ${allProspects.length} (Talent: ${talentPoolActual}, GitHub: ${allProspects.length - talentPoolActual})`);
 
-    // AUTOMATED OUTREACH - Top 5 highest scored
+    // AUTOMATED OUTREACH - Top 2*target_count highest scored
+    const emailTargetCount = goal.target_count * 2;
     const topProspectsForEmail = allProspects
       .sort((a, b) => b.ai_score - a.ai_score)
-      .slice(0, 5);
+      .slice(0, emailTargetCount);
+
+    console.log(`📧 Sending opening emails to top ${topProspectsForEmail.length} prospects`);
 
     for (const prospect of topProspectsForEmail) {
       try {
@@ -301,8 +304,39 @@ export async function discoverProspectsForGoal(
           continue;
         }
 
-        await sendEmailToProspect(prospect);
+        // Check if email already sent
+        if (prospect.email_sent) {
+          console.log(`Email already sent to ${prospect.name}, skipping`);
+          continue;
+        }
+
+        await sendEmailToProspect(prospect, goal);
         console.log(`📧 Email sent to ${prospect.name} (Score: ${prospect.ai_score})`);
+        
+        // Update prospect status
+        await Prospect.findByIdAndUpdate(prospect._id, {
+          email_sent: true,
+          email_sent_at: new Date(),
+          status: 'contacted'
+        });
+
+        // Create Message record
+        await Message.create({
+          goal_id: goal._id,
+          prospect_id: prospect._id,
+          sequence_step: 1,
+          message_type: MessageType.INITIAL,
+          channel: Channel.EMAIL,
+          subject_line: `Opening email for ${goal.objective_type}`,
+          body: `Initial outreach to ${prospect.name}`,
+          personalization_hooks: prospect.signals || [],
+          generation_context: {
+            ai_score: prospect.ai_score,
+            score_reasoning: prospect.score_reasoning,
+          },
+          sent_at: new Date(),
+          status: MessageStatus.SENT,
+        });
         
         // Update contacted count for talent pool
         if (prospect.source === 'talent_pool') {
@@ -310,6 +344,9 @@ export async function discoverProspectsForGoal(
             $inc: { contacted_count: 1 }
           });
         }
+
+        // Small delay to avoid rate limits
+        await new Promise(resolve => setTimeout(resolve, 500));
       } catch (err) {
         console.error(`❌ Failed email to ${prospect.email}`, err);
       }

@@ -19,6 +19,8 @@ export interface IProspect extends Document {
   status: ProspectStatus;
   discovered_at: Date;
   updated_at: Date;
+  email_sent: boolean;
+  email_sent_at?: Date;
 }
 
 const ProspectSchema = new Schema<IProspect>(
@@ -44,6 +46,8 @@ const ProspectSchema = new Schema<IProspect>(
       index: true,
     },
     discovered_at: { type: Date, default: Date.now },
+    email_sent: { type: Boolean, default: false },
+    email_sent_at: { type: Date },
   },
   {
     timestamps: { createdAt: false, updatedAt: "updated_at" },
